@@ -146,3 +146,135 @@ debug 2019-03-21 19:53:32.859 7fd5f7a9b700  0 log_channel(audit) log [DBG] : fro
 https://192.168.101.68:30511  
 
 
+部署Ceph toolbox  
+----------------
+1、默认启动的Ceph集群，是开启Ceph认证的，这样你登陆Ceph组件所在的Pod里，是没法去获取集群状态，以及执行CLI命令，这时需要部署Ceph toolbox，命令如下  
+```
+# kubectl apply -f toolbox.yaml
+```  
+
+2、部署成功后，pod如下：  
+```
+# kubectl -n rook-ceph get pods -o wide | grep ceph-tools
+rook-ceph-tools-76c7d559b6-2px47     1/1     Running     0          19s   192.168.101.67   node02   <none>           <none>
+```  
+
+3、然后可以登陆该pod后，执行Ceph CLI命令  
+```
+# kubectl -n rook-ceph exec -it rook-ceph-tools-76c7d559b6-2px47 bash
+bash: warning: setlocale: LC_CTYPE: cannot change locale (en_US.UTF-8): No such file or directory
+bash: warning: setlocale: LC_COLLATE: cannot change locale (en_US.UTF-8): No such file or directory
+bash: warning: setlocale: LC_MESSAGES: cannot change locale (en_US.UTF-8): No such file or directory
+bash: warning: setlocale: LC_NUMERIC: cannot change locale (en_US.UTF-8): No such file or directory
+bash: warning: setlocale: LC_TIME: cannot change locale (en_US.UTF-8): No such file or directory
+```  
+
+4、查看ceph集群状态  
+```
+[root@node02 /]# ceph status
+  cluster:
+    id:     e262d949-d0ce-48e9-97ee-6b19c575b695
+    health: HEALTH_WARN
+            clock skew detected on mon.b
+ 
+  services:
+    mon: 3 daemons, quorum c,a,b
+    mgr: a(active)
+    osd: 2 osds: 2 up, 2 in
+ 
+  data:
+    pools:   0 pools, 0 pgs
+    objects: 0  objects, 0 B
+    usage:   8.7 GiB used, 26 GiB / 35 GiB avail
+    pgs:     
+ 
+```  
+
+5、查看ceph配置文件  
+```
+[root@node02 ceph]# cd /etc/ceph/
+
+[root@node02 ceph]# ll
+total 12
+-rw-r--r--. 1 root root 120 Mar 30 10:00 ceph.conf
+-rw-r--r--. 1 root root  62 Mar 30 10:00 keyring
+-rw-r--r--. 1 root root  92 Mar 18 11:15 rbdmap
+
+[root@node02 ceph]# cat ceph.conf
+[global]
+mon_host = 10.98.204.137:6789,10.105.215.160:6789,10.97.14.19:6789
+
+[client.admin]
+keyring = /etc/ceph/keyring
+
+[root@node02 ceph]# cat keyring
+[client.admin]
+key = AQBL65Ncp+t4ChAAV3sD46EZzJGDzjXld9Eifg==
+
+[root@node02 ceph]# cat rbdmap
+# RbdDevice		Parameters
+#poolname/imagename	id=client,keyring=/etc/ceph/ceph.client.keyring
+[root@node02 ceph]# 
+```  
+
+rook提供RBD服务
+--------------
+rook可以提供以下3类型的存储：  
+Block: Create block storage to be consumed by a pod  
+Object: Create an object store that is accessible inside or outside the Kubernetes cluster  
+Shared File System: Create a file system to be shared across multiple pods  
+
+在提供（Provisioning）块存储之前，需要先创建StorageClass和存储池。K8S需要这两类资源，才能和Rook交互，进而分配持久卷（PV）。  
+
+在kubernetes集群里，要提供rbd块设备服务，需要有如下步骤：  
+- 创建rbd-provisioner pod  
+- 创建rbd对应的storageclass  
+- 创建pvc，使用rbd对应的storageclass  
+- 创建pod使用rbd pvc  
+
+通过rook创建Ceph Cluster之后，rook自身提供了rbd-provisioner服务，所以我们不需要再部署其provisioner。  
+备注：代码位置pkg/operator/ceph/provisioner/provisioner.go  
+创建pool和StorageClass  
+查看storageclass.yaml的配置（默认）：  
+```
+# cat storageclass.yaml
+apiVersion: ceph.rook.io/v1
+kind: CephBlockPool
+metadata:
+  name: replicapool
+  namespace: rook-ceph
+spec:
+  replicated:
+    size: 1
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+   name: rook-ceph-block
+provisioner: ceph.rook.io/block
+parameters:
+  blockPool: replicapool
+  # Specify the namespace of the rook cluster from which to create volumes.
+  # If not specified, it will use `rook` as the default namespace of the cluster.
+  # This is also the namespace where the cluster will be
+  clusterNamespace: rook-ceph
+  # Specify the filesystem type of the volume. If not specified, it will use `ext4`.
+  fstype: xfs
+  # (Optional) Specify an existing Ceph user that will be used for mounting storage with this StorageClass.
+  #mountUser: user1
+  # (Optional) Specify an existing Kubernetes secret name containing just one key holding the Ceph user secret.
+  # The secret must exist in each namespace(s) where the storage will be consumed.
+  #mountSecret: ceph-user1-secret
+```  
+配置文件中包含了一个名为replicapool的存储池，和名为rook-ceph-block的storageClass。  
+运行yaml文件  
+```
+# kubectl apply -f storageclass.yaml
+```  
+
+查看创建的storageclass:  
+```
+# kubectl get storageclass
+NAME              PROVISIONER          AGE
+rook-ceph-block   ceph.rook.io/block   44s
+```  
