@@ -278,3 +278,129 @@ parameters:
 NAME              PROVISIONER          AGE
 rook-ceph-block   ceph.rook.io/block   44s
 ```  
+
+登录ceph dashboard查看创建的存储池：  
+
+
+使用存储  
+---------
+以官方wordpress示例为例，创建一个经典的wordpress和mysql应用程序来使用Rook提供的块存储，这两个应用程序都将使用Rook提供的block volumes。  
+查看yaml文件配置，主要看定义的pvc和挂载volume部分，以wordpress.yaml为例：  
+```
+# cat ../wordpress.yaml 
+apiVersion: v1
+kind: Service
+metadata:
+  name: wordpress
+  labels:
+    app: wordpress
+spec:
+  ports:
+  - port: 80
+  selector:
+    app: wordpress
+    tier: frontend
+  type: LoadBalancer
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: wp-pv-claim
+  labels:
+    app: wordpress
+spec:
+  storageClassName: rook-ceph-block
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wordpress
+  labels:
+    app: wordpress
+spec:
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: wordpress
+        tier: frontend
+    spec:
+      containers:
+      - image: wordpress:4.6.1-apache
+        name: wordpress
+        env:
+        - name: WORDPRESS_DB_HOST
+          value: wordpress-mysql
+        - name: WORDPRESS_DB_PASSWORD
+          value: changeme
+        ports:
+        - containerPort: 80
+          name: wordpress
+        volumeMounts:
+        - name: wordpress-persistent-storage
+          mountPath: /var/www/html
+      volumes:
+      - name: wordpress-persistent-storage
+        persistentVolumeClaim:
+          claimName: wp-pv-claim
+```  
+yaml文件里定义了一个名为wp-pv-claim的pvc，指定storageClassName为rook-ceph-block，申请的存储空间大小为20Gi。最后一部分创建了一个名为wordpress-persistent-storage的volume，并且指定 claimName为pvc的名称，最后将volume挂载到pod的/var/lib/mysql目录下。  
+启动mysql和wordpress ：  
+```
+kubectl apply -f mysql.yaml
+kubectl apply -f wordpress.yaml
+```  
+
+这2个应用都会创建一个块存储卷，并且挂载到各自的pod中，查看声明的pvc和pv：  
+```
+# kubectl get pvc
+NAME             STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS      AGE
+mysql-pv-claim   Bound    pvc-e28dad25-4c1d-11e9-b6a2-000c299d9e73   20Gi       RWO            rook-ceph-block   76s
+wp-pv-claim      Bound    pvc-dbc7f03c-4c1d-11e9-b6a2-000c299d9e73   20Gi       RWO            rook-ceph-block   88s
+```  
+
+注意：这里的pv会自动创建，当提交了包含 StorageClass 字段的 PVC 之后，Kubernetes 就会根据这个 StorageClass 创建出对应的 PV，这是用到的是Dynamic Provisioning机制来动态创建pv，PV 支持 Static 静态请求，和动态创建两种方式。  
+
+在Ceph集群端检查：  
+```
+# kubectl -n rook-ceph exec -it rook-ceph-tools-76c7d559b6-2px47 bash
+.....
+[root@node02 /]# rbd info -p replicapool pvc-dbc7f03c-4c1d-11e9-b6a2-000c299d9e73
+rbd image 'pvc-dbc7f03c-4c1d-11e9-b6a2-000c299d9e73':
+	size 20 GiB in 5120 objects
+	order 22 (4 MiB objects)
+	snapshot_count: 0
+	id: 3b1bb601a041
+	block_name_prefix: rbd_data.3b1bb601a041
+	format: 2
+	features: layering
+	op_features: 
+	flags: 
+	create_timestamp: Thu Mar 21 20:53:47 2019
+```  
+
+登陆pod检查rbd设备：  
+```
+# kubectl get pod -o wide
+NAME                               READY   STATUS    RESTARTS   AGE     IP           NODE     NOMINATED NODE   READINESS GATES
+wordpress-mysql-6887bf844f-8nqbp   1/1     Running   0          7m34s   10.244.1.9   node02      <none>           <none>
+wordpress-mysql-6887bf844f-9pmg8   1/1     Running   0          135m   10.244.2.14   k8s-node2   <none>           <none>
+
+
+kubectl exec -it wordpress-7b6c4c79bb-t5pst bash
+root@wordpress-7b6c4c79bb-t5pst:/var/www/html#
+root@wordpress-7b6c4c79bb-t5pst:/var/www/html#  mount | grep rbd
+/dev/rbd0 on /var/www/html type xfs (rw,relatime,attr2,inode64,sunit=8192,swidth=8192,noquota)
+root@wordpress-7b6c4c79bb-t5pst:/var/www/html# df -h
+Filesystem Size Used Avail Use% Mounted on
+......
+/dev/rbd0 20G 59M 20G 1% /var/www/html
+......
+```  
+
