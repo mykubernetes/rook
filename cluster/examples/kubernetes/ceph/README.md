@@ -112,8 +112,9 @@ for host in ${hosts[@]} ; do
 done
 ```  
 
-7、配置ceph dashboard  
-在cluster.yaml文件中默认已经启用了ceph dashboard，查看dashboard的service：  
+配置ceph dashboard  
+-------------------
+1、在cluster.yaml文件中默认已经启用了ceph dashboard，查看dashboard的service：  
 ```
 # kubectl get service -n rook-ceph
 NAME                                     TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)          AGE
@@ -124,17 +125,17 @@ rook-ceph-mon-a                          ClusterIP   10.98.204.137    <none>    
 rook-ceph-mon-b                          ClusterIP   10.105.215.160   <none>        6789/TCP         28m
 rook-ceph-mon-c                          ClusterIP   10.97.14.19      <none>        6789/TCP         28m
 ```  
-rook-ceph-mgr-dashboard监听的端口是8443，创建nodeport类型的service以便集群外部访问。  
+2、rook-ceph-mgr-dashboard监听的端口是8443，创建nodeport类型的service以便集群外部访问。  
 ```
 # kubectl apply -f dashboard-external-https.yaml
 ```  
-查看一下nodeport暴露的端口，这里是30511端口：  
+3、查看一下nodeport暴露的端口，这里是30511端口：  
 ```
 # kubectl get service -n rook-ceph | grep dashboard
 rook-ceph-mgr-dashboard                  ClusterIP   10.105.88.141    <none>        8443/TCP         29m
 rook-ceph-mgr-dashboard-external-https   NodePort    10.104.106.111   <none>        8443:30511/TCP   27m
 ```  
-获取Dashboard的登陆账号和密码  
+4、获取Dashboard的登陆账号和密码  
 ```
 # MGR_POD=`kubectl get pod -n rook-ceph | grep mgr | awk '{print $1}'`
 # kubectl -n rook-ceph logs $MGR_POD | grep password
@@ -142,7 +143,7 @@ debug 2019-03-21 19:53:32.859 7fd5f7a9b700  0 log_channel(audit) log [DBG] : fro
 ```  
 找到username和password字段，我这里是admin，XtfoBbh8T5  
 
-打开浏览器输入任意一个Node的IP+nodeport端口，这里使用master节点 ip访问：  
+5、打开浏览器输入任意一个Node的IP+nodeport端口，这里使用master节点 ip访问：  
 https://192.168.101.68:30511  
 
 
