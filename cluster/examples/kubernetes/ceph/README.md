@@ -405,3 +405,41 @@ Filesystem Size Used Avail Use% Mounted on
 ......
 ```  
 
+部署 Ceph Monitoring Prometheus 监控
+===============================
+ceph安装好后可以选择 Prometheus 来作为监控组件，部署 Prometheus 可以采用 Prometheus Operator 来部署。  
+1、部署 Prometheus Operator  
+```
+# kubectl apply -f https://raw.githubusercontent.com/coreos/prometheus-operator/v0.26.0/bundle.yaml clusterrolebinding.rbac.authorization.k8s.io/prometheus-operator created 
+clusterrole.rbac.authorization.k8s.io/prometheus-operator created 
+deployment.apps/prometheus-operator created 
+serviceaccount/prometheus-operator created 
+
+# kubectl get pod 
+NAME                                READY   STATUS     RESTARTS    AGE 
+prometheus-operator-544f649-bhfxz   1/1     Running       0        13m
+```  
+
+2、部署Prometheus实例  
+Rook提供好了部署Prometheus实例的yaml文件。  
+```
+# cd cluster/examples/kubernetes/ceph/monitoring 
+# kubectl create -f ./ 
+service/rook-prometheus created 
+serviceaccount/prometheus created 
+clusterrole.rbac.authorization.k8s.io/prometheus created 
+clusterrolebinding.rbac.authorization.k8s.io/prometheus created 
+prometheus.monitoring.coreos.com/rook-prometheus created 
+servicemonitor.monitoring.coreos.com/rook-ceph-mgr created 
+
+# kubectl -n rook-ceph get pod |grep prometheus-rook 
+prometheus-rook-prometheus-0     3/3     Running    1    10m
+```  
+
+3、访问Prometheus Dashboard  
+```
+$ kubectl -n rook-ceph get svc |grep rook-prometheus 
+rook-prometheus     NodePort     10.68.152.50    <none>    9090:30900/TCP     13m 
+```  
+打开web  
+http://192.168.101.66:30900  
