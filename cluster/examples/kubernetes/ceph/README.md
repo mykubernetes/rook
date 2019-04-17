@@ -384,6 +384,40 @@ rbd image 'pvc-dbc7f03c-4c1d-11e9-b6a2-000c299d9e73':
 	op_features: 
 	flags: 
 	create_timestamp: Thu Mar 21 20:53:47 2019
+
+[root@node2 /]# ceph df 
+GLOBAL: 
+     SIZE     AVAIL     RAW USED   %RAW USED 
+     96 GiB   75 GiB    21 GiB      21.52 
+POOLS: 
+    NAME ID USED %USED MAX AVAIL OBJECTS 
+[root@node2 /]# ceph osd status +----+----------------------------------+-------+-------+--------+---------+--------+---------+-----------+
+| id | host                             | used  | avail | wr ops | wr data | rd ops | rd data | state     | +----+----------------------------------+-------+-------+--------+---------+--------+---------+-----------+ 
+| 0  | rook-ceph-osd-0-6ccbd4dc4d-2w9jt | 7893M | 24.2G | 0      | 0       | 0      | 0       | exists,up | 
+| 1  | rook-ceph-osd-1-647cbb4b84-65ttr | 5148M | 26.9G | 0      | 0       | 0      | 0       | exists,up | 
+| 2  | rook-ceph-osd-2-7b8ff9fc47-g8l6q | 8096M | 24.0G | 0      | 0       | 0      | 0       | exists,up | +----+----------------------------------+-------+-------+--------+---------+--------+---------+-----------+ 
+[root@node2 /]# rados df 
+POOL_NAME USED OBJECTS CLONES COPIES MISSING_ON_PRIMARY UNFOUND DEGRADED RD_OPS RD WR_OPS WR 
+
+total_objects     0 
+total_used        21 GiB 
+total_avail       75 GiB 
+total_space       96 GiB 
+
+# 创建一个新的 pool 
+[root@node2 /]# ceph osd pool create test_pool 64 
+pool 'test_pool' created 
+[root@node2 /]# ceph osd pool get test_pool size 
+size: 1 
+
+# 再次执行 ceph df 查看是否显示创建的 pool 
+[root@node2 /]# ceph df 
+GLOBAL: 
+     SIZE      AVAIL     RAW USED    %RAW USED 
+     96 GiB    75 GiB      21 GiB        21.52
+POOLS: 
+     NAME       ID   USED    %USED   MAX AVAIL    OBJECTS 
+     test_pool   1    0 B        0      67 GiB          0
 ```  
 
 登陆pod检查rbd设备：  
