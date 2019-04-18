@@ -465,6 +465,190 @@ export AWS_SECRET_ACCESS_KEY=EWRo6aKjO7OcBWaT974UASUX0SWn4PyzvJGzJSKT
 - SECRET_KEY：上边获取的  
 一切准备就绪，就可以通过 s3cmd 工具来操作了。注意：以下操作均在 rook-ceph-tools-5bd5cdb949-d22ql 容器内操作。  
 
+创建 Bucket  
+```
+# 创建一个 rookbucket 
+[root@node2 /]# s3cmd mb --no-ssl --host=${AWS_HOST} --host-bucket=  s3://rookbucket
+Bucket 's3://rookbucket/' created
+```  
+获取 Bucket 列表  
+```
+# 获取所有 bucket 列表
+[root@node2 /]# s3cmd ls --no-ssl --host=${AWS_HOST}
+2019-01-08 06:46  s3://rookbucket
+```  
+Put Object  
+```
+# 创建一个数据文件，并上传到 s3 rookbucket
+[root@node2 /]# echo "This is test data from rook-toolbox." > /rookdata   
+[root@node2 /]# s3cmd put /rookdata --no-ssl --host=${AWS_HOST} --host-bucket=  s3://rookbucket
+upload: '/rookdata' -> 's3://rookbucket/rookdata'  [1 of 1]
+ 37 of 37   100% in    0s   582.89 B/s  done
+```  
+Get Object  
+```
+# 从 s3 rookbucket 获取 rootdata 数据到本地
+[root@node2 /]# s3cmd get s3://rookbucket/rookdata /rookdata-s3 --no-ssl --host=${AWS_HOST} --host-bucket=
+download: 's3://rookbucket/rookdata' -> '/rookdata-s3'  [1 of 1]
+ 37 of 37   100% in    0s   763.14 B/s  done
+[root@node2 /]# cat /rookdata-s3 
+This is test data from rook-toolbox.
+```  
+数据读取出来了，跟上传的一模一样。s3cmd 其他命令，例如：Remove (rb)、Delete (del)、Copy (cp)、Modify (modify) 等命令，可以通过 s3cmd -h 命令查看，大家可以尝试一下，这里就不在演示了。  
+
+
+集群外访问  
+以上都是在集群内部容器访问的，如果我们需要外部访问的话，就不行了。这里可以通过部署一个新的 Service 使用 NodePort 暴漏方式。  
+```
+$ vim busy-box-obj-rgw-external.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: rook-ceph-rgw-busy-box-obj-external
+  namespace: rook-ceph
+  labels:
+    app: rook-ceph-rgw
+    rook_cluster: rook-ceph
+    rook_object_store: busy-box-obj
+spec:
+  ports:
+  - name: rgw
+    port: 80
+    protocol: TCP
+    targetPort: 80
+  selector:
+    app: rook-ceph-rgw
+    rook_cluster: rook-ceph
+    rook_object_store: busy-box-obj
+  sessionAffinity: None
+  type: NodePort
+  
+$ kubectl create -f busy-box-obj-rgw-external.yaml 
+service/rook-ceph-rgw-busy-box-obj-external created
+$ kubectl -n rook-ceph get svc | grep rook-ceph-rgw
+rook-ceph-rgw-busy-box-obj               ClusterIP   10.68.117.190   <none>        80/TCP           90m
+rook-ceph-rgw-busy-box-obj-external      NodePort    10.68.127.192   <none>        80:24313/TCP     66s
+```  
+这样，外部就可以通过 http://10.222.78.63:24313 来访问了。我们在集群外部机器，写一个 Python 测试脚本，该脚本将会连接 rgw，然后新建一个新的 bucket，再列出所有的 buckets。脚本变量 access_key 和 secret_key 值就是上边的 access_key 和 secret_key。  
+```
+# 安装一下 python-boto 工具
+$ yum install python-boto
+
+$ vim s3.py
+import boto
+import boto.s3.connection
+access_key = 'RZTGKUPYG4OJ2EASVPCY'
+secret_key = 'EWRo6aKjO7OcBWaT974UASUX0SWn4PyzvJGzJSKT'
+conn = boto.connect_s3(
+    aws_access_key_id = access_key,
+    aws_secret_access_key = secret_key,
+    host = '10.222.78.63', port=24313,
+    is_secure=False,
+    calling_format = boto.s3.connection.OrdinaryCallingFormat(),
+)
+bucket = conn.create_bucket('my-s3-bucket')
+for bucket in conn.get_all_buckets():
+        print "{name}\t{created}".format(
+                name = bucket.name,
+                created = bucket.creation_date,
+)
+
+$ python s3.py 
+Traceback (most recent call last):
+  File "s3.py", line 13, in <module>
+    for bucket in conn.get_all_buckets():
+  File "/usr/lib/python2.7/site-packages/boto/s3/connection.py", line 444, in get_all_buckets
+    response.status, response.reason, body)
+boto.exception.S3ResponseError: S3ResponseError: 403 Forbidden
+<?xml version="1.0" encoding="UTF-8"?><Error><Code>RequestTimeTooSkewed</Code><RequestId>tx00000000000000000003b-005c3465ac-363d-busy-box-obj</RequestId><HostId>363d-busy-box-obj-busy-box-obj</HostId></Error>
+```  
+配置好 host、port、access_key、secret_key，测试一下，不过很遗憾报错了。。。提示 403 Forbidden，但是我们明明在脚本里面设置了正确的 access_key 和 secret_key 为啥报这个错误? 不过后边 <Code>RequestTimeTooSkewed</Code> 这个错误日志指出，是因为请求时间不合理。  
+
+经过一番排查后，的确是这个问题，因为集群外部机器时间跟集群内 Pod 时间是不一致的，相差了 10 个小时左右，初步判断应该是时区设置不正确。当初启动 Pod 的时候没有将系统当前时间挂载到容器内，导致时间不一致。那么怎么办呢？我们可以去集群内任意一个容器内执行该脚本，因为他们的时间是一致的。虽然还是容器内执行，但是我们连接 s3 服务地址和方式都一样了呦！那么继续去 rook-toolbox 容器内执行吧！  
+```
+$ kubectl -n rook-ceph exec -it rook-ceph-tools-5bd5cdb949-d22ql bash
+[root@node2 /] yum install python-boto
+[root@node2 /] vim s3.py
+[root@node2 /] python s3.py 
+my-s3-bucket	2019-01-08T07:49:31.517Z
+rookbucket	2019-01-08T06:46:23.843Z
+```  
+测试通过，只要时间一致，没问题的  
+
+配置 Ceph Object Gateway Management Frontend  
+
+最后我们访问一下 Rook Dashboard Object Gateway，发现还是什么都没有。但是页面提示我们去参考 Ceph Documents 文档，开启 Object Gateway Management Frontend 功能，这样在 Rook Dashboard 就可以看到了。那么赶紧去实验一下吧！  
+
+进入 rook-toolbox 容器内操作。
+```
+$ kubectl -n rook-ceph exec -it rook-ceph-tools-5bd5cdb949-d22ql bash
+
+# 获取 user 列表
+[root@node2 /]# radosgw-admin user list
+[
+    "busy-box-obj-user"
+]
+
+# 查看 user 信息
+[root@node2 /]# radosgw-admin user info --uid=busy-box-obj-user
+{
+    "user_id": "busy-box-obj-user",
+    "display_name": "busy-box display name",
+    "email": "",
+    "suspended": 0,
+    "max_buckets": 1000,
+    "auid": 0,
+    "subusers": [],
+    "keys": [
+        {
+            "user": "busy-box-obj-user",
+            "access_key": "RZTGKUPYG4OJ2EASVPCY",
+            "secret_key": "EWRo6aKjO7OcBWaT974UASUX0SWn4PyzvJGzJSKT"
+        }
+    ],
+    "swift_keys": [],
+    "caps": [],
+    "op_mask": "read, write, delete",
+    "default_placement": "",
+    "placement_tags": [],
+    "bucket_quota": {
+        "enabled": false,
+        "check_on_raw": false,
+        "max_size": -1,
+        "max_size_kb": 0,
+        "max_objects": -1
+    },
+    "user_quota": {
+        "enabled": false,
+        "check_on_raw": false,
+        "max_size": -1,
+        "max_size_kb": 0,
+        "max_objects": -1
+    },
+    "temp_url_keys": [],
+    "type": "rgw",
+    "mfa_ids": []
+}
+
+# ceph dashboard 设置 host、port、access-key、secret-key 等连接 s3 的配置信息
+[root@node2 /]# ceph dashboard set-rgw-api-access-key RZTGKUPYG4OJ2EASVPCY
+Option RGW_API_ACCESS_KEY updated
+[root@node2 /]# ceph dashboard set-rgw-api-secret-key EWRo6aKjO7OcBWaT974UASUX0SWn4PyzvJGzJSKT
+Option RGW_API_SECRET_KEY updated
+[root@node2 /]# ceph dashboard set-rgw-api-host 10.222.78.63
+Option RGW_API_HOST updated
+[root@node2 /]# ceph dashboard set-rgw-api-port 24313
+Option RGW_API_PORT updated
+[root@node2 /]# ceph dashboard set-rgw-api-user-id busy-box-obj-user
+Option RGW_API_USER_ID updated
+[root@node2 /]# ceph dashboard set-rgw-api-scheme http
+Option RGW_API_SCHEME updated
+```  
+
+
+
+
+
 
 
 
