@@ -397,6 +397,74 @@ dataPool:
       size: 1
 ```
 
+2、创建 User 用户  
+然后创建一个 CephObjectStoreUser User 账户，来生成 AccessKey 和 SecretKey，为了后边该用户访问 S3 存储使用。  
+```
+$ vim busy-box-obj-user.yaml
+apiVersion: ceph.rook.io/v1
+kind: CephObjectStoreUser
+metadata:
+  name: busy-box-obj-user
+  namespace: rook-ceph
+spec:
+  store: busy-box-obj
+  displayName: "busy-box display name"
+
+$ kubectl create -f busy-box-obj-user.yaml 
+cephobjectstoreuser.ceph.rook.io/busy-box-obj-user created
+$ kubectl -n rook-ceph get cephobjectstoreuser
+NAME                AGE
+busy-box-obj-user   31s
+```  
+默认 Rook 将生成的包含认证Key的用户信息存在 secret 中，那么，查看下该 secret 生成的 Key 是什么。  
+```
+$ kubectl -n rook-ceph get secret | grep rook-ceph-object-user
+rook-ceph-object-user-busy-box-obj-busy-box-obj-user   kubernetes.io/rook         2      2m34s
+$ kubectl -n rook-ceph describe secret/rook-ceph-object-user-busy-box-obj-busy-box-obj-user
+Name:         rook-ceph-object-user-busy-box-obj-busy-box-obj-user
+Namespace:    rook-ceph
+Labels:       app=rook-ceph-rgw
+              rook_cluster=rook-ceph
+              rook_object_store=busy-box-obj
+              user=busy-box-obj-user
+Annotations:  <none>
+
+Type:  kubernetes.io/rook
+
+Data
+====
+AccessKey:  20 bytes
+SecretKey:  40 bytes
+```  
+貌似 AccessKey 和 SecretKey 都隐藏了  
+```
+$ kubectl -n rook-ceph get secret/rook-ceph-object-user-busy-box-obj-busy-box-obj-user -o jsonpath='{.data.AccessKey}' | base64 --decode
+RZTGKUPYG4OJ2EASVPCY
+$ kubectl -n rook-ceph get secret/rook-ceph-object-user-busy-box-obj-busy-box-obj-user -o jsonpath='{.data.SecretKey}' | base64 --decode
+EWRo6aKjO7OcBWaT974UASUX0SWn4PyzvJGzJSKT
+```  
+要牢记这两个 Key 值，因为以后访问 S3 的时候必须带上，否则认证不通过。  
+
+3、集群内访问  
+可以进入到 rook-toolbox 容器内访问该文件存储。首先需要安装一下 s3cmd 客户端工具，该工具提供 CLI 专门用来操作 s3 存储。  
+```
+$ kubectl -n rook-ceph exec -it rook-ceph-tools-5bd5cdb949-d22ql bash
+[root@node2 /]# yum install s3cmd
+```  
+然后，我们可以将连接 s3 存储的一些配置信息设置为 ENV 环境变量的形式，会大大方便后边访问。  
+```
+export AWS_HOST=rook-ceph-rgw-busy-box-obj.rook-ceph
+export AWS_ENDPOINT=10.68.117.190:80
+export AWS_ACCESS_KEY_ID=RZTGKUPYG4OJ2EASVPCY
+export AWS_SECRET_ACCESS_KEY=EWRo6aKjO7OcBWaT974UASUX0SWn4PyzvJGzJSKT
+```  
+简单说明一下：  
+- HOST：rgw 服务在集群内 DNS 地址，按照 K8s DNS 服务命名规则，简单一些可以配置为：rook-ceph-rgw-busy-box-obj.rook-ceph  
+- ENDPOINT：rgw 服务监听地址，因为是在进群内部访问，所以可以通过获取 rook-ceph-rgw-busy-box-obj Service 的 Cluster_IP 和 Port，上边 5.1、创建 Object Store 已经获取到了，那么地址为： 10.68.117.190:80  
+- ACCESS_KEY：上边获取的  
+- SECRET_KEY：上边获取的  
+一切准备就绪，就可以通过 s3cmd 工具来操作了。注意：以下操作均在 rook-ceph-tools-5bd5cdb949-d22ql 容器内操作。  
+
 
 
 
